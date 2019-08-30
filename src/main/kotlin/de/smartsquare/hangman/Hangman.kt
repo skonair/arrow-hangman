@@ -1,4 +1,4 @@
-package io.github.lordraydenmk
+package de.smartsquare.hangman
 
 import arrow.effects.IO
 import arrow.effects.extensions.io.fx.fx

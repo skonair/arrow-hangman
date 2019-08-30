@@ -1,28 +1,19 @@
-package io.github.lordraydenmk.part2
+package de.smartsquare.hangman.solution
 
-import arrow.Kind
-import arrow.core.toOption
-import arrow.effects.rx2.SingleK
-import arrow.effects.rx2.extensions.singlek.monadDefer.monadDefer
-import arrow.effects.rx2.fix
-import arrow.effects.typeclasses.MonadDefer
+import arrow.effects.IO
+import arrow.effects.extensions.io.fx.fx
+import arrow.effects.fix
+import arrow.effects.liftIO
+import arrow.optics.Lens
+import arrow.syntax.collections.firstOption
 import java.io.IOException
 import kotlin.random.Random
 import kotlin.streams.toList
 
-fun <F> MonadDefer<F>.putStrLn(line: String): Kind<F, Unit> = delay {
-    println(line)
-}
+fun putStrLn(line: String): IO<Unit> = IO { println(line) }
+fun getStrLn(): IO<String> = IO { readLine() ?: throw IOException("Failed to read input!") }
 
-fun <F> MonadDefer<F>.getStrLn(): Kind<F, String> = defer {
-    readLine().toOption()
-            .fold(
-                    { raiseError<String>(IOException("Failed to read input!")) },
-                    { just(it) }
-            )
-}
-
-class Hangman<F>(private val M: MonadDefer<F>): MonadDefer<F> by M {
+object Hangman {
 
     data class State(val name: String, val guesses: Set<Char> = emptySet(), val word: String) {
 
@@ -33,6 +24,11 @@ class Hangman<F>(private val M: MonadDefer<F>): MonadDefer<F> by M {
         val playerWon: Boolean = (word.toSet().minus(guesses)).isEmpty()
     }
 
+    val stateLens: Lens<State, Set<Char>> = Lens(
+            get = { state -> state.guesses},
+            set = { state, value -> state.copy(guesses = value)}
+    )
+
     val dictionary: List<String> by lazy {
         javaClass.classLoader.getResource("words.txt")
                 .openStream()
@@ -41,20 +37,20 @@ class Hangman<F>(private val M: MonadDefer<F>): MonadDefer<F> by M {
                 .toList()
     }
 
-    val hangman: Kind<F, Unit> = binding {
+    val hangman: IO<Unit> = fx {
         putStrLn("Welcome to purely functional hangman").bind()
-        val name = getName.bind()
+        val (name) = getName
         putStrLn("Welcome $name. Let's begin!").bind()
-        val word = chooseWord.bind()
+        val (word) = chooseWord
         val state = State(name, word = word)
         renderState(state).bind()
         gameLoop(state).bind()
         Unit
-    }
+    }.fix()
 
-    fun gameLoop(state: State): Kind<F, State> = binding {
+    fun gameLoop(state: State): IO<State> = fx {
         val guess = getChoice().bind()
-        val updatedState = state.copy(guesses = state.guesses.plus(guess))
+        val updatedState = stateLens.lift { it.plus(guess) }(state)
         renderState(updatedState).bind()
         val loop = when {
             updatedState.playerWon -> putStrLn("Congratulations ${state.name} you won the game").map { false }
@@ -63,36 +59,37 @@ class Hangman<F>(private val M: MonadDefer<F>): MonadDefer<F> by M {
             else -> putStrLn("That's wrong, but keep trying").map { true }
         }.bind()
         if (loop) gameLoop(updatedState).bind() else updatedState
-    }
+    }.fix()
 
-    val getName: Kind<F, String> = binding {
+    val getName: IO<String> = fx {
         putStrLn("What is your name: ").bind()
-        getStrLn().bind()
-    }
+        val (name) = getStrLn()
+        name
+    }.fix()
 
-    fun getChoice(): Kind<F, Char> = binding {
+    fun getChoice(): IO<Char> = fx {
         putStrLn("Please enter a letter").bind()
         val line = getStrLn().bind()
-        val char = line.toLowerCase().first().toOption().fold(
+        val char = line.toLowerCase().trim().firstOption().fold(
                 {
-                    putStrLn("Please enter a letter")
+                    putStrLn("You did not enter a character")
                             .flatMap { getChoice() }
                 },
                 {
-                    char -> delay { char }
+                    IO.just(it)
                 }
         ).bind()
         char
-    }
+    }.fix()
 
-    fun nextInt(max: Int): Kind<F, Int> = delay { Random.nextInt(max) }
+    fun nextInt(max: Int): IO<Int> = IO { Random.nextInt(max) }
 
-    val chooseWord: Kind<F, String> = binding {
+    val chooseWord: IO<String> = fx {
         val rand = nextInt(dictionary.size).bind()
-        dictionary[rand]
-    }
+        dictionary[rand].liftIO().bind()
+    }.fix()
 
-    fun renderState(state: State): Kind<F, Unit> {
+    fun renderState(state: State): IO<Unit> {
         val word = state.word.toList().map { if (state.guesses.contains(it)) " $it " else "   " }
                 .joinToString("")
         val line = state.word.map { " - " }.joinToString("")
@@ -103,7 +100,5 @@ class Hangman<F>(private val M: MonadDefer<F>): MonadDefer<F> by M {
 }
 
 fun main() {
-    Hangman(SingleK.monadDefer()).hangman.fix()
-            .single
-            .subscribe()
+    Hangman.hangman.unsafeRunSync()
 }
